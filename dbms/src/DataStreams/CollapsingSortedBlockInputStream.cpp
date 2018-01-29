@@ -45,7 +45,7 @@ void CollapsingSortedBlockInputStream::insertRows(MutableColumns & merged_column
     if (count_positive == 0 && count_negative == 0)
         return;
 
-    if (count_positive == count_negative && !last_is_positive)
+    if (count_positive == count_negative && (!last_is_positive || force_collapse_with_different_signs))
     {
         /// If all the rows in the input streams was collapsed, we still want to give at least one block in the result.
         if (last_in_stream && merged_rows == 0 && !blocks_written)
@@ -68,7 +68,7 @@ void CollapsingSortedBlockInputStream::insertRows(MutableColumns & merged_column
     }
     else
     {
-        if (count_positive <= count_negative)
+        if (count_positive <= count_negative) // < if force_collapse_with_different_signs
         {
             ++merged_rows;
             for (size_t i = 0; i < num_columns; ++i)
@@ -78,7 +78,7 @@ void CollapsingSortedBlockInputStream::insertRows(MutableColumns & merged_column
                 current_row_sources[first_negative_pos].setSkipFlag(false);
         }
 
-        if (count_positive >= count_negative)
+        if (count_positive >= count_negative) // > if force_collapse_with_different_signs
         {
             ++merged_rows;
             for (size_t i = 0; i < num_columns; ++i)
