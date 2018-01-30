@@ -227,7 +227,7 @@ void GraphiteRollupSortedBlockInputStream::startNextGroup(MutableColumns & merge
     for (size_t i = 0, size = unmodified_column_numbers.size(); i < size; ++i)
     {
         size_t j = unmodified_column_numbers[i];
-        merged_columns[j]->insertFrom(*cursor->all_columns[j], cursor->pos);
+        merged_columns[j]->insertFrom(*cursor->shared_block->all_columns[j], cursor->pos);
     }
 
     if (next_pattern)

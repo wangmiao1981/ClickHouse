@@ -217,7 +217,7 @@ Block MergeSortingBlocksBlockInputStream::mergeImpl(std::priority_queue<TSortCur
         queue.pop();
 
         for (size_t i = 0; i < num_columns; ++i)
-            merged_columns[i]->insertFrom(*current->all_columns[i], current->pos);
+            merged_columns[i]->insertFrom(*current->shared_block->all_columns[i], current->pos);
 
         if (!current->isLast())
         {
