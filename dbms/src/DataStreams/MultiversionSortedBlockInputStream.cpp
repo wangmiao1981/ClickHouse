@@ -73,7 +73,7 @@ void MultiversionSortedBlockInputStream::merge(MutableColumns & merged_columns, 
 {
     size_t merged_rows = 0;
 
-    auto update_queue = [this](SortCursor & cursor)
+    auto update_queue = [this, & queue](SortCursor & cursor)
     {
         if (!cursor->isLast())
         {

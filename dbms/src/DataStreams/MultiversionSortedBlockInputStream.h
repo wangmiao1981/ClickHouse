@@ -22,7 +22,7 @@ public:
         T value;
 
         ValueWithGap() : gap(0) {}
-        explicit ValueWithGap(const T & value) : value(value), gap(0) {}
+        explicit ValueWithGap(const T & value) : gap(0), value(value) {}
     };
 
     explicit FixedSizeDequeWithGaps(size_t size)
