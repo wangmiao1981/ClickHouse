@@ -28,9 +28,15 @@ public:
         size_t max_block_size,
         unsigned num_streams) override;
 
+    bool hasColumn(const String & column_name) const override;
+
+    NameAndTypePair getColumn(const String & column_name) const override;
+
 private:
     const std::string name;
     NamesAndTypesList columns;
+
+    ColumnsWithTypeAndName virtual_columns;
 
 protected:
     StorageSystemTables(const std::string & name_);
