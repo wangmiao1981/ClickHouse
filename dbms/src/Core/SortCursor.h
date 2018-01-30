@@ -67,7 +67,7 @@ inline void intrusive_ptr_release(detail::SharedBlock * ptr)
 struct SortCursorImpl
 {
     SharedBlockPtr shared_block;
-    const SortDescription & desc;
+    SortDescription desc;
     size_t sort_columns_size = 0;
     size_t pos = 0;
     size_t rows = 0;
@@ -102,9 +102,6 @@ struct SortCursorImpl
     void reset(Block && block)
     {
         shared_block = new detail::SharedBlock(std::move(block), desc);
-
-        size_t num_columns = shared_block->columns();
-
 
         for (size_t j = 0, size = desc.size(); j < size; ++j)
         {
