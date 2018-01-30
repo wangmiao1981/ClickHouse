@@ -131,7 +131,6 @@ Block SummingSortedBlockInputStream::readImpl()
     if (current_row.empty())
     {
         current_row.resize(num_columns);
-        next_key.columns.resize(description.size());
 
         /// name of nested structure -> the column numbers that refer to it.
         std::unordered_map<std::string, std::vector<size_t>> discovered_maps;
@@ -323,8 +322,7 @@ void SummingSortedBlockInputStream::merge(MutableColumns & merged_columns, std::
         bool key_differs;
 
         if (current_key.empty())    /// The first key encountered.
-         {
-            current_key.columns.resize(description.size());
+        {
             setPrimaryKeyRef(current_key, current);
             key_differs = true;
         }
@@ -393,10 +391,10 @@ bool SummingSortedBlockInputStream::mergeMap(const MapDescription & desc, Row & 
     Row right(left.size());
 
     for (size_t col_num : desc.key_col_nums)
-        right[col_num] = (*cursor->all_columns[col_num])[cursor->pos].template get<Array>();
+        right[col_num] = (*cursor->shared_block->all_columns[col_num])[cursor->pos].template get<Array>();
 
     for (size_t col_num : desc.val_col_nums)
-        right[col_num] = (*cursor->all_columns[col_num])[cursor->pos].template get<Array>();
+        right[col_num] = (*cursor->shared_block->all_columns[col_num])[cursor->pos].template get<Array>();
 
     auto at_ith_column_jth_row = [&](const Row & matrix, size_t i, size_t j) -> const Field &
     {
@@ -478,7 +476,7 @@ void SummingSortedBlockInputStream::addRow(SortCursor & cursor)
         // Specialized case for unary functions
         if (desc.column_numbers.size() == 1)
         {
-            auto & col = cursor->all_columns[desc.column_numbers[0]];
+            auto & col = cursor->shared_block->all_columns[desc.column_numbers[0]];
             desc.add_function(desc.function.get(), desc.state.data(), &col, cursor->pos, nullptr);
         }
         else
@@ -486,7 +484,7 @@ void SummingSortedBlockInputStream::addRow(SortCursor & cursor)
             // Gather all source columns into a vector
             ColumnRawPtrs columns(desc.column_numbers.size());
             for (size_t i = 0; i < desc.column_numbers.size(); ++i)
-                columns[i] = cursor->all_columns[desc.column_numbers[i]];
+                columns[i] = cursor->shared_block->all_columns[desc.column_numbers[i]];
 
             desc.add_function(desc.function.get(), desc.state.data(), columns.data(), cursor->pos, nullptr);
         }

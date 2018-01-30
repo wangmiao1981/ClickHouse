@@ -301,7 +301,8 @@ public:
         return merging_params.mode == MergingParams::Collapsing
             || merging_params.mode == MergingParams::Summing
             || merging_params.mode == MergingParams::Aggregating
-            || merging_params.mode == MergingParams::Replacing;
+            || merging_params.mode == MergingParams::Replacing
+            || merging_params.mode == MergingParams::Multiversion;
     }
 
     bool mayBenefitFromIndexForIn(const ASTPtr & left_in_operand) const;

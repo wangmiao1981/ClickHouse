@@ -6,9 +6,59 @@
 #include <Columns/IColumn.h>
 #include <Columns/ColumnString.h>
 
+#include <boost/intrusive_ptr.hpp>
 
 namespace DB
 {
+
+/// Allows you refer to the row in the block and hold the block ownership,
+///  and thus avoid creating a temporary row object.
+/// Do not use std::shared_ptr, since there is no need for a place for `weak_count` and `deleter`;
+///  does not use Poco::SharedPtr, since you need to allocate a block and `refcount` in one piece;
+///  does not use Poco::AutoPtr, since it does not have a `move` constructor and there are extra checks for nullptr;
+/// The reference counter is not atomic, since it is used from one thread.
+namespace detail
+{
+struct SharedBlock : Block
+{
+    int refcount = 0;
+
+    ColumnRawPtrs all_columns;
+    ColumnRawPtrs sort_columns;
+
+    SharedBlock(Block && block, const SortDescription & sort_description) : Block(std::move(block))
+    {
+        size_t num_columns = block.columns();
+
+        all_columns.reserve(num_columns);
+        for (size_t j = 0; j < num_columns; ++j)
+            all_columns.push_back(block.safeGetByPosition(j).column.get());
+
+        sort_columns.reserve(sort_description.size());
+        for (const auto & description : sort_description)
+        {
+            size_t column_number = !description.column_name.empty()
+                                   ? block.getPositionByName(description.column_name)
+                                   : description.column_number;
+
+            sort_columns.push_back(block.safeGetByPosition(column_number).column.get());
+        }
+    }
+};
+}
+
+using SharedBlockPtr = boost::intrusive_ptr<detail::SharedBlock>;
+
+inline void intrusive_ptr_add_ref(detail::SharedBlock * ptr)
+{
+    ++ptr->refcount;
+}
+
+inline void intrusive_ptr_release(detail::SharedBlock * ptr)
+{
+    if (0 == --ptr->refcount)
+        delete ptr;
+}
 
 /** Cursor allows to compare rows in different blocks (and parts).
   * Cursor moves inside single block.
@@ -16,9 +66,8 @@ namespace DB
   */
 struct SortCursorImpl
 {
-    ColumnRawPtrs all_columns;
-    ColumnRawPtrs sort_columns;
-    SortDescription desc;
+    SharedBlockPtr shared_block;
+    const SortDescription & desc;
     size_t sort_columns_size = 0;
     size_t pos = 0;
     size_t rows = 0;
@@ -39,41 +88,34 @@ struct SortCursorImpl
     /** Is there at least one column with Collator. */
     bool has_collation = false;
 
-    SortCursorImpl() {}
+    explicit SortCursorImpl(const SortDescription & desc_) : desc(desc_) {}
 
-    SortCursorImpl(const Block & block, const SortDescription & desc_, size_t order_ = 0)
+    SortCursorImpl(Block && block, const SortDescription & desc_, size_t order_ = 0)
         : desc(desc_), sort_columns_size(desc.size()), order(order_), need_collation(desc.size())
     {
-        reset(block);
+        reset(std::move(block));
     }
 
     bool empty() const { return rows == 0; }
 
     /// Set the cursor to the beginning of the new block.
-    void reset(const Block & block)
+    void reset(Block && block)
     {
-        all_columns.clear();
-        sort_columns.clear();
+        shared_block = new detail::SharedBlock(std::move(block), desc);
 
-        size_t num_columns = block.columns();
+        size_t num_columns = shared_block->columns();
 
-        for (size_t j = 0; j < num_columns; ++j)
-            all_columns.push_back(block.safeGetByPosition(j).column.get());
 
         for (size_t j = 0, size = desc.size(); j < size; ++j)
         {
-            size_t column_number = !desc[j].column_name.empty()
-                ? block.getPositionByName(desc[j].column_name)
-                : desc[j].column_number;
-
-            sort_columns.push_back(block.safeGetByPosition(column_number).column.get());
-
-            need_collation[j] = desc[j].collator != nullptr && typeid_cast<const ColumnString *>(sort_columns.back());    /// TODO Nullable(String)
+            /// TODO Nullable(String)
+            need_collation[j] = static_cast<UInt8>(desc[j].collator
+                                                   && typeid_cast<const ColumnString *>(shared_block->sort_columns[j]));
             has_collation |= need_collation[j];
         }
 
         pos = 0;
-        rows = all_columns[0]->size();
+        rows = shared_block->all_columns[0]->size();
     }
 
     bool isFirst() const { return pos == 0; }
@@ -87,18 +129,20 @@ struct SortCursor
 {
     SortCursorImpl * impl;
 
-    SortCursor(SortCursorImpl * impl_) : impl(impl_) {}
+    explicit SortCursor(SortCursorImpl * impl_) : impl(impl_) {}
     SortCursorImpl * operator-> () { return impl; }
     const SortCursorImpl * operator-> () const { return impl; }
 
     /// The specified row of this cursor is greater than the specified row of another cursor.
     bool greaterAt(const SortCursor & rhs, size_t lhs_pos, size_t rhs_pos) const
     {
+        const auto & sort_columns = impl->shared_block->sort_columns;
+        const auto & rhs_sort_columns = rhs.impl->shared_block->sort_columns;
         for (size_t i = 0; i < impl->sort_columns_size; ++i)
         {
             int direction = impl->desc[i].direction;
             int nulls_direction = impl->desc[i].nulls_direction;
-            int res = direction * impl->sort_columns[i]->compareAt(lhs_pos, rhs_pos, *(rhs.impl->sort_columns[i]), nulls_direction);
+            int res = direction * sort_columns[i]->compareAt(lhs_pos, rhs_pos, *(rhs_sort_columns[i]), nulls_direction);
             if (res > 0)
                 return true;
             if (res < 0)
@@ -141,6 +185,8 @@ struct SortCursorWithCollation
 
     bool greaterAt(const SortCursorWithCollation & rhs, size_t lhs_pos, size_t rhs_pos) const
     {
+        const auto & sort_columns = impl->shared_block->sort_columns;
+        const auto & rhs_sort_columns = rhs.impl->shared_block->sort_columns;
         for (size_t i = 0; i < impl->sort_columns_size; ++i)
         {
             int direction = impl->desc[i].direction;
@@ -148,11 +194,11 @@ struct SortCursorWithCollation
             int res;
             if (impl->need_collation[i])
             {
-                const ColumnString & column_string = static_cast<const ColumnString &>(*impl->sort_columns[i]);
-                res = column_string.compareAtWithCollation(lhs_pos, rhs_pos, *(rhs.impl->sort_columns[i]), *impl->desc[i].collator);
+                const auto & column_string = static_cast<const ColumnString &>(*sort_columns[i]);
+                res = column_string.compareAtWithCollation(lhs_pos, rhs_pos, *(rhs_sort_columns[i]), *impl->desc[i].collator);
             }
             else
-                res = impl->sort_columns[i]->compareAt(lhs_pos, rhs_pos, *(rhs.impl->sort_columns[i]), nulls_direction);
+                res = sort_columns[i]->compareAt(lhs_pos, rhs_pos, *(rhs_sort_columns[i]), nulls_direction);
 
             res *= direction;
             if (res > 0)

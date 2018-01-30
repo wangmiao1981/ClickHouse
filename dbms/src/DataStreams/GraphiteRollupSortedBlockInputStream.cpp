@@ -98,9 +98,6 @@ Block GraphiteRollupSortedBlockInputStream::readImpl()
         for (size_t i = 0; i < num_columns; ++i)
             if (i != time_column_num && i != value_column_num && i != version_column_num)
                 unmodified_column_numbers.push_back(i);
-
-        if (current_subgroup_newest_row.empty())
-            current_subgroup_newest_row.columns.resize(num_columns);
     }
 
     merge(merged_columns, queue);
@@ -124,12 +121,12 @@ void GraphiteRollupSortedBlockInputStream::merge(MutableColumns & merged_columns
     {
         SortCursor next_cursor = queue.top();
 
-        StringRef next_path = next_cursor->all_columns[path_column_num]->getDataAt(next_cursor->pos);
+        StringRef next_path = next_cursor->shared_block->all_columns[path_column_num]->getDataAt(next_cursor->pos);
         bool new_path = is_first || next_path != current_group_path;
 
         is_first = false;
 
-        time_t next_row_time = next_cursor->all_columns[time_column_num]->get64(next_cursor->pos);
+        time_t next_row_time = next_cursor->shared_block->all_columns[time_column_num]->get64(next_cursor->pos);
         /// Is new key before rounding.
         bool is_new_key = new_path || next_row_time != current_time;
 
@@ -185,7 +182,7 @@ void GraphiteRollupSortedBlockInputStream::merge(MutableColumns & merged_columns
 
         /// Within all rows with same key, we should leave only one row with maximum version;
         /// and for rows with same maximum version - only last row.
-        UInt64 next_version = next_cursor->all_columns[version_column_num]->get64(next_cursor->pos);
+        UInt64 next_version = next_cursor->shared_block->all_columns[version_column_num]->get64(next_cursor->pos);
         if (is_new_key || next_version >= current_subgroup_max_version)
         {
             current_subgroup_max_version = next_version;
@@ -257,14 +254,14 @@ void GraphiteRollupSortedBlockInputStream::finishCurrentGroup(MutableColumns & m
     }
     else
         merged_columns[value_column_num]->insertFrom(
-            *current_subgroup_newest_row.columns[value_column_num], current_subgroup_newest_row.row_num);
+            *(*current_subgroup_newest_row.columns)[value_column_num], current_subgroup_newest_row.row_num);
 }
 
 
 void GraphiteRollupSortedBlockInputStream::accumulateRow(RowRef & row)
 {
     if (aggregate_state_created)
-        current_pattern->function->add(place_for_aggregate_state.data(), &row.columns[value_column_num], row.row_num, nullptr);
+        current_pattern->function->add(place_for_aggregate_state.data(), &(*row.columns)[value_column_num], row.row_num, nullptr);
 }
 
 }

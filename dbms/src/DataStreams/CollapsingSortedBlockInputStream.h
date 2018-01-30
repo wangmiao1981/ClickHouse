@@ -25,10 +25,9 @@ class CollapsingSortedBlockInputStream : public MergingSortedBlockInputStream
 public:
     CollapsingSortedBlockInputStream(
             BlockInputStreams inputs_, const SortDescription & description_,
-            const String & sign_column_, size_t max_block_size_, bool force_collapse_with_different_signs_,
-            WriteBuffer * out_row_sources_buf_ = nullptr)
+            const String & sign_column_, size_t max_block_size_, WriteBuffer * out_row_sources_buf_ = nullptr)
         : MergingSortedBlockInputStream(inputs_, description_, max_block_size_, 0, out_row_sources_buf_)
-        , sign_column(sign_column_), force_collapse_with_different_signs(force_collapse_with_different_signs_)
+        , sign_column(sign_column_)
     {
     }
 
@@ -60,8 +59,6 @@ private:
     size_t sign_column_number = 0;
 
     Logger * log = &Logger::get("CollapsingSortedBlockInputStream");
-
-    const bool force_collapse_with_different_signs;
 
     /// Read is finished.
     bool finished = false;

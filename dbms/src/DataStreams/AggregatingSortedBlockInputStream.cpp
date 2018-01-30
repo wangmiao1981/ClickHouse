@@ -34,8 +34,6 @@ Block AggregatingSortedBlockInputStream::readImpl()
     /// Additional initialization.
     if (next_key.empty())
     {
-        next_key.columns.resize(description.size());
-
         /// Fill in the column numbers that need to be aggregated.
         for (size_t i = 0; i < num_columns; ++i)
         {
@@ -88,7 +86,6 @@ void AggregatingSortedBlockInputStream::merge(MutableColumns & merged_columns, s
 
         if (current_key.empty())    /// The first key encountered.
         {
-            current_key.columns.resize(description.size());
             setPrimaryKeyRef(current_key, current);
             key_differs = true;
         }
@@ -109,7 +106,7 @@ void AggregatingSortedBlockInputStream::merge(MutableColumns & merged_columns, s
             for (size_t i = 0, size = column_numbers_not_to_aggregate.size(); i < size; ++i)
             {
                 size_t j = column_numbers_not_to_aggregate[i];
-                merged_columns[j]->insertFrom(*current->all_columns[j], current->pos);
+                merged_columns[j]->insertFrom(*current->shared_block->all_columns[j], current->pos);
             }
 
             /// Add the empty aggregation state to the aggregate columns. The state will be updated in the `addRow` function.
@@ -142,7 +139,7 @@ void AggregatingSortedBlockInputStream::addRow(SortCursor & cursor)
     for (size_t i = 0, size = column_numbers_to_aggregate.size(); i < size; ++i)
     {
         size_t j = column_numbers_to_aggregate[i];
-        columns_to_aggregate[i]->insertMergeFrom(*cursor->all_columns[j], cursor->pos);
+        columns_to_aggregate[i]->insertMergeFrom(*cursor->shared_block->all_columns[j], cursor->pos);
     }
 }
 

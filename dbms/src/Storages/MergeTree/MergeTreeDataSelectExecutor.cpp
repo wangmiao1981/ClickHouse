@@ -806,7 +806,8 @@ BlockInputStreams MergeTreeDataSelectExecutor::spreadMarkRangesAmongStreamsFinal
                 break;
 
             case MergeTreeData::MergingParams::Collapsing:
-                merged = std::make_shared<CollapsingFinalBlockInputStream>(to_merge, data.getSortDescription(), data.merging_params.sign_column);
+                merged = std::make_shared<CollapsingFinalBlockInputStream>(
+                        to_merge, data.getSortDescription(), data.merging_params.sign_column, false);
                 break;
 
             case MergeTreeData::MergingParams::Summing:
@@ -821,6 +822,11 @@ BlockInputStreams MergeTreeDataSelectExecutor::spreadMarkRangesAmongStreamsFinal
             case MergeTreeData::MergingParams::Replacing:    /// TODO Make ReplacingFinalBlockInputStream
                 merged = std::make_shared<ReplacingSortedBlockInputStream>(to_merge,
                     data.getSortDescription(), data.merging_params.version_column, max_block_size);
+                break;
+
+            case MergeTreeData::MergingParams::Multiversion:
+                merged = std::make_shared<CollapsingFinalBlockInputStream>(
+                        to_merge, data.getSortDescription(), data.merging_params.sign_column, true);
                 break;
 
             case MergeTreeData::MergingParams::Unsorted:

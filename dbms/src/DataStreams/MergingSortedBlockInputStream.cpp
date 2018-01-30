@@ -18,9 +18,10 @@ namespace ErrorCodes
 MergingSortedBlockInputStream::MergingSortedBlockInputStream(
         BlockInputStreams & inputs_, const SortDescription & description_,
         size_t max_block_size_, size_t limit_, WriteBuffer * out_row_sources_buf_, bool quiet_)
-    : description(description_), max_block_size(max_block_size_), limit(limit_), quiet(quiet_)
-    , source_blocks(inputs_.size()), cursors(inputs_.size()), out_row_sources_buf(out_row_sources_buf_)
+    : description(description_), max_block_size(max_block_size_), limit(limit_), quiet(quiet_),
+      out_row_sources_buf(out_row_sources_buf_)
 {
+    cursors.assign(inputs_.size(), SortCursorImpl(this->description));
     children.insert(children.end(), inputs_.begin(), inputs_.end());
 }
 
@@ -53,28 +54,25 @@ void MergingSortedBlockInputStream::init(Block & header, MutableColumns & merged
     {
         first = false;
 
-        size_t i = 0;
-        for (auto it = source_blocks.begin(); it != source_blocks.end(); ++it, ++i)
-        {
-            SharedBlockPtr & shared_block_ptr = *it;
 
-            if (shared_block_ptr.get())
+        for (size_t i = 0; i < cursors.size(); ++i)
+        {
+            if (cursors[i].shared_block.get())
                 continue;
 
-            shared_block_ptr = new detail::SharedBlock(children[i]->read());
-
-            const size_t rows = shared_block_ptr->rows();
+            auto block = children[i]->read();
+            const size_t rows = block.rows();
 
             if (rows == 0)
                 continue;
 
             if (!num_columns)
-                num_columns = shared_block_ptr->columns();
+                num_columns = block.columns();
 
             if (expected_block_size < rows)
                 expected_block_size = std::min(rows, max_block_size);
 
-            cursors[i] = SortCursorImpl(*shared_block_ptr, description, i);
+            cursors[i] = SortCursorImpl(std::move(block), description, i);
             has_collation |= cursors[i].has_collation;
         }
 
@@ -88,10 +86,10 @@ void MergingSortedBlockInputStream::init(Block & header, MutableColumns & merged
 
     /// We clone the structure of the first non-empty source block.
     {
-        auto it = source_blocks.cbegin();
-        for (; it != source_blocks.cend(); ++it)
+        auto it = cursors.cbegin();
+        for (; it != cursors.cend(); ++it)
         {
-            const SharedBlockPtr & shared_block_ptr = *it;
+            const SharedBlockPtr & shared_block_ptr = it->shared_block;
 
             if (*shared_block_ptr)
             {
@@ -101,14 +99,14 @@ void MergingSortedBlockInputStream::init(Block & header, MutableColumns & merged
         }
 
         /// If all the input blocks are empty.
-        if (it == source_blocks.cend())
+        if (it == cursors.cend())
             return;
     }
 
     /// Let's check that all source blocks have the same structure.
-    for (auto it = source_blocks.cbegin(); it != source_blocks.cend(); ++it)
+    for (auto it = cursors.cbegin(); it != cursors.cend(); ++it)
     {
-        const SharedBlockPtr & shared_block_ptr = *it;
+        const SharedBlockPtr & shared_block_ptr = it->shared_block;
 
         if (!*shared_block_ptr)
             continue;
@@ -173,25 +171,18 @@ Block MergingSortedBlockInputStream::readImpl()
 template <typename TSortCursor>
 void MergingSortedBlockInputStream::fetchNextBlock(const TSortCursor & current, std::priority_queue<TSortCursor> & queue)
 {
-    size_t i = 0;
+    size_t order = current.impl->order;
     size_t size = cursors.size();
-    for (; i < size; ++i)
-    {
-        if (&cursors[i] == current.impl)
-        {
-            source_blocks[i] = new detail::SharedBlock(children[i]->read());
-            if (*source_blocks[i])
-            {
-                cursors[i].reset(*source_blocks[i]);
-                queue.push(TSortCursor(&cursors[i]));
-            }
 
-            break;
-        }
-    }
-
-    if (i == size)
+    if (order >= size || &cursors[order] != current.impl)
         throw Exception("Logical error in MergingSortedBlockInputStream", ErrorCodes::LOGICAL_ERROR);
+
+    auto block = children[order]->read();
+    if (block)
+    {
+        cursors[order].reset(std::move(block));
+        queue.push(TSortCursor(&cursors[order]));
+    }
 }
 
 template
@@ -260,7 +251,7 @@ void MergingSortedBlockInputStream::merge(MutableColumns & merged_columns, std::
                     throw Exception("Logical error in MergingSortedBlockInputStream", ErrorCodes::LOGICAL_ERROR);
 
                 for (size_t i = 0; i < num_columns; ++i)
-                    merged_columns[i] = source_blocks[source_num]->getByPosition(i).column->mutate();
+                    merged_columns[i] = cursors[source_num].shared_block->getByPosition(i).column->mutate();
 
     //            std::cerr << "copied columns\n";
 
@@ -296,7 +287,7 @@ void MergingSortedBlockInputStream::merge(MutableColumns & merged_columns, std::
     //        std::cerr << "total_merged_rows: " << total_merged_rows << ", merged_rows: " << merged_rows << "\n";
     //        std::cerr << "Inserting row\n";
             for (size_t i = 0; i < num_columns; ++i)
-                merged_columns[i]->insertFrom(*current->all_columns[i], current->pos);
+                merged_columns[i]->insertFrom(*current->shared_block->all_columns[i], current->pos);
 
             if (out_row_sources_buf)
             {

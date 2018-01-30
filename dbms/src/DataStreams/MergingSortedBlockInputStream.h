@@ -22,37 +22,6 @@ namespace ErrorCodes
 }
 
 
-/// Allows you refer to the row in the block and hold the block ownership,
-///  and thus avoid creating a temporary row object.
-/// Do not use std::shared_ptr, since there is no need for a place for `weak_count` and `deleter`;
-///  does not use Poco::SharedPtr, since you need to allocate a block and `refcount` in one piece;
-///  does not use Poco::AutoPtr, since it does not have a `move` constructor and there are extra checks for nullptr;
-/// The reference counter is not atomic, since it is used from one thread.
-namespace detail
-{
-    struct SharedBlock : Block
-    {
-        int refcount = 0;
-
-        SharedBlock(Block && value_)
-            : Block(std::move(value_)) {};
-    };
-}
-
-using SharedBlockPtr = boost::intrusive_ptr<detail::SharedBlock>;
-
-inline void intrusive_ptr_add_ref(detail::SharedBlock * ptr)
-{
-    ++ptr->refcount;
-}
-
-inline void intrusive_ptr_release(detail::SharedBlock * ptr)
-{
-    if (0 == --ptr->refcount)
-        delete ptr;
-}
-
-
 /** Merges several sorted streams into one sorted stream.
   */
 class MergingSortedBlockInputStream : public IProfilingBlockInputStream
@@ -77,7 +46,7 @@ public:
 protected:
     struct RowRef
     {
-        ColumnRawPtrs columns;
+        ColumnRawPtrs * columns = nullptr;
         size_t row_num;
         SharedBlockPtr shared_block;
 
@@ -91,9 +60,9 @@ protected:
         /// The number and types of columns must match.
         bool operator==(const RowRef & other) const
         {
-            size_t size = columns.size();
+            size_t size = columns->size();
             for (size_t i = 0; i < size; ++i)
-                if (0 != columns[i]->compareAt(row_num, other.row_num, *other.columns[i], 1))
+                if (0 != (*columns)[i]->compareAt(row_num, other.row_num, *(*other.columns)[i], 1))
                     return false;
             return true;
         }
@@ -103,8 +72,8 @@ protected:
             return !(*this == other);
         }
 
-        bool empty() const { return columns.empty(); }
-        size_t size() const { return columns.size(); }
+        bool empty() const { return columns == nullptr; }
+        size_t size() const { return empty() ? 0 : columns->size(); }
     };
 
 
@@ -132,9 +101,7 @@ protected:
     /// May be smaller or equal to max_block_size. To do 'reserve' for columns.
     size_t expected_block_size = 0;
 
-    /// Blocks currently being merged.
     size_t num_columns = 0;
-    std::vector<SharedBlockPtr> source_blocks;
 
     using CursorImpls = std::vector<SortCursorImpl>;
     CursorImpls cursors;
@@ -160,7 +127,7 @@ protected:
         {
             try
             {
-                cursor->all_columns[i]->get(cursor->pos, row[i]);
+                cursor->shared_block->all_columns[i]->get(cursor->pos, row[i]);
             }
             catch (...)
             {
@@ -169,11 +136,11 @@ protected:
                 /// Find out the name of the column and throw more informative exception.
 
                 String column_name;
-                for (const auto & block : source_blocks)
+                for (const auto & any_cursor : cursors)
                 {
-                    if (i < block->columns())
+                    if (i < any_cursor.shared_block->columns())
                     {
-                        column_name = block->safeGetByPosition(i).name;
+                        column_name = any_cursor.shared_block->safeGetByPosition(i).name;
                         break;
                     }
                 }
@@ -189,20 +156,16 @@ protected:
     void setRowRef(RowRef & row_ref, TSortCursor & cursor)
     {
         row_ref.row_num = cursor.impl->pos;
-        row_ref.shared_block = source_blocks[cursor.impl->order];
-
-        for (size_t i = 0; i < num_columns; ++i)
-            row_ref.columns[i] = cursor->all_columns[i];
+        row_ref.shared_block = cursor->shared_block;
+        row_ref.columns = &row_ref.shared_block->all_columns;
     }
 
     template <typename TSortCursor>
     void setPrimaryKeyRef(RowRef & row_ref, TSortCursor & cursor)
     {
         row_ref.row_num = cursor.impl->pos;
-        row_ref.shared_block = source_blocks[cursor.impl->order];
-
-        for (size_t i = 0; i < cursor->sort_columns_size; ++i)
-            row_ref.columns[i] = cursor->sort_columns[i];
+        row_ref.shared_block = cursor->shared_block;
+        row_ref.columns = &row_ref.shared_block->sort_columns;
     }
 
 private:
